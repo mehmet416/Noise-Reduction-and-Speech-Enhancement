@@ -5,6 +5,10 @@ from core.stft import stft
 # Log-Spectral Distance (LSD)
 # --------------------------------------------------
 def log_spectral_distance(clean, estimate, frame_len=512, hop_len=128):
+    L = min(len(clean), len(estimate))
+    clean = clean[:L]
+    estimate = estimate[:L]
+
     X = stft(clean, n_fft=frame_len, hop=hop_len)
     Y = stft(estimate, n_fft=frame_len, hop=hop_len)
 

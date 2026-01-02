@@ -8,7 +8,19 @@ from IPython.display import Audio
 # --------------------------------------------------
 def load_audio(path, sr=16000):
     x, fs = librosa.load(path, sr=sr, mono=True)
-    return x.astype(np.float32), fs
+
+    x = x.astype(np.float32)
+
+    # Remove NaN / Inf if any
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # Hard normalization
+    max_val = np.max(np.abs(x))
+    if max_val > 0:
+        x = x / max_val
+
+    return x, fs
+
 
 # --------------------------------------------------
 # Save audio
@@ -19,8 +31,10 @@ def save_audio(path, x, fs):
 # --------------------------------------------------
 # Play audio (for debugging)
 # --------------------------------------------------
-def play_audio(x, fs):
+def play_audio(x, fs=16000):
+    x = np.nan_to_num(x)
     return Audio(x, rate=fs)
+
 
 # --------------------------------------------------
 # Signal utilities
