@@ -1,21 +1,13 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy import signal
 from scipy.linalg import hankel, svd
-from scipy.io import wavfile
 
-# =============================================================================
-# CLASS: PCA DENOISER
-# =============================================================================
 class PCADenoiser:
-    def __init__(self, embedding_dim=200, k_components=20):
-        """
-        embedding_dim (L): Window size. Increased to 200 for 5 seconds of audio.
-        k_components (K): Number of principal components to keep.
-        """
+    def __init__(self, embedding_dim=300, k_components=None, energy_threshold=None):
         self.L = embedding_dim
         self.K = k_components
+        self.energy_th = energy_threshold
         self.singular_values = None
+        self.used_k = 0 
         
     def reconstruct_from_hankel(self, matrix):
         rows, cols = matrix.shape
@@ -24,41 +16,48 @@ class PCADenoiser:
         count = np.zeros(n_samples)
         
         for r in range(rows):
-            # Vectorized addition (loop optimized for speed)
-            # Diagonal Averaging
             reconstructed[r:r+cols] += matrix[r, :]
             count[r:r+cols] += 1
             
+        count[count == 0] = 1
         return reconstructed / count
 
     def fit_transform(self, noisy_signal):
-        print(f"[PCA] Creating matrix (Embedding L={self.L})...")
-        N = len(noisy_signal)
-        
-        # 1. Trajectory Matrix (Hankel)
-        # Converting the signal into an [L x M] matrix.
+        # Koruma
+        if len(noisy_signal) < self.L: return noisy_signal
+
+        # 1. Hankel
         first_col = noisy_signal[:self.L]
         last_row = noisy_signal[self.L-1:]
         H = hankel(first_col, last_row)
         
-        print(f"[PCA] Calculating SVD (Matrix Size: {H.shape})... Please wait.")
+        # 2. SVD
+        U, S, Vt = svd(H, full_matrices=False)
+        self.singular_values = S
         
-        # 2. SVD (Singular Value Decomposition)
-        # full_matrices=False, saves RAM.
-        U, Sigma, Vt = svd(H, full_matrices=False)
+        # 3. K Seçimi
+        if self.energy_th is not None:
+            total_energy = np.sum(S**2)
+            cumulative = np.cumsum(S**2) / total_energy
+            
+            # Eşiği geçen nokta
+            k_idx = np.searchsorted(cumulative, self.energy_th)
+            current_k = k_idx + 1
+            
+            # --- DÜZELTME BURADA ---
+            # Eskiden *0.5 ile sınırlandırmıştık, şimdi kaldırıyoruz.
+            # Sadece matris boyutunu aşmasın yeter.
+            current_k = max(1, min(current_k, len(S) - 1))
+            self.used_k = current_k
+            
+        else:
+            current_k = self.K if self.K is not None else 20
+            self.used_k = current_k
+
+        # 4. Thresholding
+        S_clean = np.zeros_like(S)
+        S_clean[:self.used_k] = S[:self.used_k]
         
-        self.singular_values = Sigma
-        
-        # 3. Thresholding (Noise Removal)
-        Sigma_clean = np.zeros_like(Sigma)
-        Sigma_clean[:self.K] = Sigma[:self.K] # Keep only the strongest K components
-        
-        energy_ratio = np.sum(Sigma[:self.K]**2) / np.sum(Sigma**2)
-        print(f"[PCA] {energy_ratio*100:.2f}% of energy retained (Signal Subspace).")
-        print(f"[PCA] Remaining {(1-energy_ratio)*100:.2f}% discarded as noise.")
-        
-        # 4. Reconstruction
-        H_clean = U @ np.diag(Sigma_clean) @ Vt
-        clean_signal = self.reconstruct_from_hankel(H_clean)
-        
-        return clean_signal
+        # 5. Reconstruction
+        H_clean = U @ np.diag(S_clean) @ Vt
+        return self.reconstruct_from_hankel(H_clean)

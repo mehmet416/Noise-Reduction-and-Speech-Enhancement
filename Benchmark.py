@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy import signal
 
 # --- IMPORTS ---
 from core.audio_io import load_audio, normalize
@@ -7,76 +8,89 @@ from core.mixing import mix_with_snr
 from enhancement.spectral_subtraction import spectral_subtraction
 from enhancement.wiener_static import wiener_filter_static
 from enhancement.wiener_adaptive import wiener_dd
-from enhancement.PCA import PCADenoiser
+from enhancement.pca import PCADenoiser
 from enhancement.adaptive import DualChannelSimulator, AdaptiveNLMSFilter
 
 # =============================================================================
-# YENİ FONKSİYON: SEGMENTAL SNR HESAPLAMA
+# YENİ FONKSİYON: SİNYAL HİZALAMA VE SNR (THE FIX)
 # =============================================================================
-def calculate_segmental_snr(clean, processed, fs, frame_len_sec=0.030):
+def align_and_calculate_snr(clean, processed):
     """
-    Sinyali 30ms'lik çerçevelere böler ve Segmental SNR hesaplar.
-    Global SNR'dan farklı olarak insan kulağının algısına daha yakındır.
+    İşlenmiş sinyali temiz sinyalle milimetrik hizalar.
+    LMS gibi filtrelerin yarattığı gecikmeyi (delay) telafi eder.
+    Bunu yapmazsak, ses güzel olsa bile SNR sonucu yanlış çıkar.
     """
-    # 1. Boyut ve Enerji Eşitleme
-    min_len = min(len(clean), len(processed))
-    clean = clean[:min_len]
-    processed = processed[:min_len]
+    # 1. Enerji Eşitleme (Genlik farkını yok et)
+    # Temiz sesin enerjisi
+    e_clean = np.sum(clean ** 2)
+    e_proc = np.sum(processed ** 2)
+    if e_proc == 0: return 0 # Sessizlik
     
-    # Enerji ölçekleme (Genlik farkını yok saymak için)
-    e_clean = np.sum(clean**2)
-    e_proc = np.sum(processed**2)
-    if e_proc > 0:
-        processed = processed * np.sqrt(e_clean / e_proc)
-    
-    # 2. Çerçeveleme (Framing)
-    frame_len = int(frame_len_sec * fs)
-    n_frames = int(len(clean) / frame_len)
-    
-    # Tam bölünebilmesi için kırp
-    clean = clean[:n_frames*frame_len]
-    processed = processed[:n_frames*frame_len]
-    
-    # (N_frames, Frame_len) formatına dönüştür
-    clean_frames = clean.reshape(n_frames, frame_len)
-    processed_frames = processed.reshape(n_frames, frame_len)
-    
-    # 3. Gürültü (Error) Hesapla
-    noise_frames = processed_frames - clean_frames
-    
-    # 4. Güç Hesapla
-    signal_energy = np.sum(clean_frames**2, axis=1)
-    noise_energy = np.sum(noise_frames**2, axis=1)
-    
-    # 5. Logaritmik Hesaplama ve Sınırlama (Clamping)
-    # Sessiz kısımlarda sonsuz değer çıkmaması için epsilon ve min/max sınırlar
-    eps = 1e-10
-    
-    # Her çerçevenin SNR'ı (dB)
-    segment_snrs = 10 * np.log10((signal_energy + eps) / (noise_energy + eps))
-    
-    # Segmental SNR genelde -10dB ile 35dB arasına sıkıştırılır (Literatür standardı)
-    segment_snrs = np.clip(segment_snrs, -10, 35)
-    
-    # Ortalama al
-    return np.mean(segment_snrs)
+    processed = processed * np.sqrt(e_clean / e_proc)
 
-# Standart Global SNR
-def calculate_global_snr(clean, processed):
+    # 2. Cross-Correlation ile Gecikme Bulma
+    # Hız için FFT tabanlı korelasyon kullanıyoruz
+    corr = signal.correlate(clean, processed, mode='full', method='fft')
+    lags = signal.correlation_lags(len(clean), len(processed), mode='full')
+    
+    # En yüksek uyumun olduğu gecikme (lag)
+    best_lag = lags[np.argmax(np.abs(corr))]
+    
+    # 3. Sinyali Kaydır (Hizala)
+    if best_lag > 0:
+        # Processed geride kalmış, ileri al
+        processed_aligned = np.pad(processed, (best_lag, 0), mode='constant')[:len(clean)]
+    elif best_lag < 0:
+        # Processed önden gidiyor (bu nadir olur), geriye al
+        processed_aligned = processed[-best_lag:]
+        # Boyut yetmezse sonuna sıfır ekle
+        if len(processed_aligned) < len(clean):
+            processed_aligned = np.pad(processed_aligned, (0, len(clean)-len(processed_aligned)), mode='constant')
+    else:
+        processed_aligned = processed
+
+    # Boyutları kesin eşitle
+    min_len = min(len(clean), len(processed_aligned))
+    clean = clean[:min_len]
+    processed_aligned = processed_aligned[:min_len]
+
+    # 4. Artık Doğru SNR Hesaplanabilir
+    noise_residual = processed_aligned - clean
+    p_signal = np.mean(clean ** 2)
+    p_noise = np.mean(noise_residual ** 2)
+    
+    if p_noise == 0: return 100
+    
+    return 10 * np.log10(p_signal / p_noise)
+
+
+def calculate_segmental_snr(clean, processed, fs, frame_len_sec=0.030):
+    # Segmental için de basit bir hizalama yapalım (manuel kaydırma yok, enerji eşitleme var)
     min_len = min(len(clean), len(processed))
     clean = clean[:min_len]; processed = processed[:min_len]
     
-    # Enerji Eşitleme
     e_c = np.sum(clean**2); e_p = np.sum(processed**2)
     if e_p > 0: processed = processed * np.sqrt(e_c / e_p)
-        
+    
+    frame_len = int(frame_len_sec * fs)
+    n_frames = int(len(clean) // frame_len)
+    
+    clean = clean[:n_frames*frame_len].reshape(n_frames, frame_len)
+    processed = processed[:n_frames*frame_len].reshape(n_frames, frame_len)
+    
     noise = processed - clean
-    p_s = np.mean(clean**2); p_n = np.mean(noise**2)
-    if p_n == 0: return 100
-    return 10 * np.log10(p_s / p_n)
+    p_s = np.sum(clean**2, axis=1)
+    p_n = np.sum(noise**2, axis=1)
+    
+    # Log domain
+    eps = 1e-10
+    seg_snrs = 10 * np.log10((p_s + eps) / (p_n + eps))
+    seg_snrs = np.clip(seg_snrs, -10, 35) # Sınırlandırma
+    
+    return np.mean(seg_snrs)
 
 # --- AYARLAR ---
-snr_list = [0, 5, 10, 15, 20]
+snr_list = [0, 2.5, 5, 7.5, 10]
 noise_files = {
     "Traffic": "data/noise/traffic.wav",
     "White":   "data/noise/white.wav",
@@ -84,18 +98,16 @@ noise_files = {
 }
 
 methods = ["Spectral Subtraction", "Wiener Static", "Wiener DD", "PCA", "Adaptive LMS"]
-
-# Sonuçları saklamak için iki ayrı sözlük
 results_global = {n: {m: [] for m in methods} for n in noise_files}
 results_seg = {n: {m: [] for m in methods} for n in noise_files}
 
-print("Benchmark ve Segmental SNR Analizi Başlıyor...")
+print("Gelişmiş Hizalama (Alignment) ile Benchmark Başlıyor...")
 clean_full, fs = load_audio("data/clean/clean_speech.wav")
 clean = normalize(clean_full[:5*fs]) # 5 saniye
 
+# Simülatör (Leakage ayarına dikkat: -35dB)
 simulator = DualChannelSimulator(room_complexity=64)
 
-# --- ANA DÖNGÜ ---
 for noise_name, noise_path in noise_files.items():
     print(f"\n>> Analiz Ediliyor: {noise_name}")
     noise, _ = load_audio(noise_path)
@@ -104,16 +116,15 @@ for noise_name, noise_path in noise_files.items():
     for snr in snr_list:
         print(f"   Input SNR: {snr} dB...", end="")
         
-        # Tek Kanal Giriş
+        # --- Single Channel ---
         noisy_single, _ = mix_with_snr(clean, noise, snr_db=snr)
         
-        # Girişin Segmental SNR değerini hesapla (Improvement için referans)
-        seg_snr_input = calculate_segmental_snr(clean, noisy_single, fs)
-        
-        # Fonksiyonları çalıştırmak için bir sözlük yapısı
+        # Giriş SegSNR Referansı
+        seg_snr_in = calculate_segmental_snr(clean, noisy_single, fs)
+
         outputs = {}
         
-        # 1. Spectral Subtraction
+        # 1. SS
         try: outputs["Spectral Subtraction"] = spectral_subtraction(noisy_single, fs)
         except: outputs["Spectral Subtraction"] = noisy_single
 
@@ -129,70 +140,90 @@ for noise_name, noise_path in noise_files.items():
         
         # 4. PCA
         try:
-            pca = PCADenoiser(embedding_dim=200, k_components=20)
+            pca = PCADenoiser(embedding_dim=300, energy_threshold=0.8)
             outputs["PCA"] = pca.fit_transform(noisy_single)
         except: outputs["PCA"] = noisy_single
 
-        # 5. Adaptive LMS (Optimize edilmiş)
+        # 5. Adaptive LMS (Referans Sinyali Kullanarak)
         try:
+            # Leakage -35, Simülasyon
             d_prim, x_ref = simulator.simulate(clean, noise, snr_db=snr, leakage_db=-35)
             nlms = AdaptiveNLMSFilter(filter_order=64, learning_rate=0.005)
+            
+            # auto_sync=False diyoruz çünkü ana hizalamayı 'align_and_calculate_snr' yapacak
             outputs["Adaptive LMS"] = nlms.process(d_prim, x_ref, auto_sync=True)
-        except: outputs["Adaptive LMS"] = noisy_single
+        except: 
+            outputs["Adaptive LMS"] = noisy_single
 
-        # --- METRİK HESAPLAMA ---
+        # --- METRİKLER (HİZALAMA DAHİL) ---
         for m in methods:
             processed = outputs[m]
             
-            # Global Improvement
-            imp_glob = calculate_global_snr(clean, processed) - snr
-            results_global[noise_name][m].append(imp_glob)
+            # HİZALANMIŞ GLOBAL SNR
+            snr_out = align_and_calculate_snr(clean, processed)
+            results_global[noise_name][m].append(snr_out - snr)
             
-            # Segmental Improvement (Çıkış SegSNR - Giriş SegSNR)
-            seg_out = calculate_segmental_snr(clean, processed, fs)
-            imp_seg = seg_out - seg_snr_input
-            results_seg[noise_name][m].append(imp_seg)
+            # Segmental SNR
+            snr_seg_out = calculate_segmental_snr(clean, processed, fs)
+            results_seg[noise_name][m].append(snr_seg_out - seg_snr_in)
             
         print(" OK.")
+# =============================================================================
+# 4. GRAFİK ÇİZDİRME (GÜNCELLENMİŞ: Hepsi Düz Çizgi)
+# =============================================================================
 
-# --- ÇİZDİRME (SIDE-BY-SIDE PLOTS) ---
-styles = {
-    "Spectral Subtraction": {"c": "red", "s": "--"},
-    "Wiener Static":        {"c": "orange", "s": "--"},
-    "Wiener DD":            {"c": "green", "s": "-"},
-    "PCA":                  {"c": "purple", "s": "-."},
-    "Adaptive LMS":         {"c": "blue", "s": "-", "lw": 2.5}
+# Renk Tanımları
+colors = {
+    "Spectral Subtraction": "red",
+    "Wiener Static":        "orange",
+    "Wiener DD":            "green",
+    "PCA":                  "purple",
+    "Adaptive LMS":         "blue"
 }
 
 for noise_name in noise_files.keys():
-    # 1 Satır, 2 Sütunluk grafik alanı
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
     
     # --- Grafik 1: Global SNR ---
-    ax1.axhline(0, color='black', alpha=0.3)
-    for m in methods:
-        y = results_global[noise_name][m]
-        st = styles.get(m, {})
-        ax1.plot(snr_list, y, label=m, color=st.get("c"), ls=st.get("s"), lw=st.get("lw", 1.5), marker='o')
+    ax1.axhline(0, color='black', alpha=0.3, linewidth=1) # 0 noktası referansı
     
-    ax1.set_title(f"Global SNR Improvement ({noise_name})", fontsize=12, fontweight='bold')
+    for m in methods:
+        # LMS dikkat çeksin diye biraz daha kalın (3.0), diğerleri 2.0
+        lw = 3.0 if m == "Adaptive LMS" else 2.0
+        
+        ax1.plot(snr_list, results_global[noise_name][m], 
+                 label=m, 
+                 color=colors[m], 
+                 linestyle='-',    # HEPSİ DÜZ ÇİZGİ
+                 linewidth=lw, 
+                 marker='o',       # Yuvarlak işaretleyici
+                 markersize=8)
+                 
+    ax1.set_title(f"Global SNR Improvement (Aligned) - {noise_name}", fontsize=12, fontweight='bold')
     ax1.set_xlabel("Input SNR (dB)")
     ax1.set_ylabel("Improvement (dB)")
-    ax1.set_xticks(snr_list)
+    ax1.set_xticks(snr_list) # X ekseninde sadece 0, 5, 10 görünsün
     ax1.grid(True, alpha=0.4)
     ax1.legend()
 
     # --- Grafik 2: Segmental SNR ---
-    ax2.axhline(0, color='black', alpha=0.3)
-    for m in methods:
-        y = results_seg[noise_name][m]
-        st = styles.get(m, {})
-        ax2.plot(snr_list, y, label=m, color=st.get("c"), ls=st.get("s"), lw=st.get("lw", 1.5), marker='s')
+    ax2.axhline(0, color='black', alpha=0.3, linewidth=1)
     
-    ax2.set_title(f"Segmental SNR Improvement ({noise_name})", fontsize=12, fontweight='bold')
+    for m in methods:
+        lw = 3.0 if m == "Adaptive LMS" else 2.0
+        
+        ax2.plot(snr_list, results_seg[noise_name][m], 
+                 label=m, 
+                 color=colors[m], 
+                 linestyle='-',    # HEPSİ DÜZ ÇİZGİ
+                 linewidth=lw, 
+                 marker='s',       # Kare işaretleyici (Farklılık olsun diye)
+                 markersize=8)
+                 
+    ax2.set_title(f"Segmental SNR Improvement - {noise_name}", fontsize=12, fontweight='bold')
     ax2.set_xlabel("Input SNR (dB)")
     ax2.set_ylabel("SegSNR Improvement (dB)")
-    ax2.set_xticks(snr_list)
+    ax2.set_xticks(snr_list) # X ekseninde sadece 0, 5, 10 görünsün
     ax2.grid(True, alpha=0.4)
     ax2.legend()
     
