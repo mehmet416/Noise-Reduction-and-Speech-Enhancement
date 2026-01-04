@@ -1,101 +1,94 @@
 import numpy as np
 from scipy.signal import stft, istft
 
-
 def wiener_dd(
     noisy,
     fs,
+    noise_type="stationary", # Benchmark kodunla uyum için bu parametreyi tuttuk
     win_len_sec=0.02,
     hop_len_sec=0.01,
     nfft=512,
-    alpha=0.98,            # decision-directed smoothing
-    init_sec=0.5,
-    init_quantile=0.2,
-    psd_smooth=0.8,
-    beta_noise_fast=0.90,  # fast adaptation (noise-only)
-    beta_noise_slow=0.995, # slow adaptation (speech present)
-    gamma_th=3.0,
-    gain_floor=0.05,
+    alpha=0.98,            # A-priori SNR smoothing
+    init_sec=0.2,          # İlk kaç saniyeyi gürültü kabul edelim?
+    gain_floor=0.01,       # Maksimum bastırma (-40dB)
+    oversubtraction=1.5,   # SNR ARTIRICI HAMLE: Gürültüyü agresif çıkar
     eps=1e-10,
 ):
     """
-    Adaptive STFT-domain Wiener filter.
-    - Noise PSD tracked online
-    - Soft speech presence probability
-    - Suitable for non-stationary noise
+    Optimized Adaptive Wiener Filter.
+    Supports 'noise_type' argument for compatibility but uses internal VAD logic.
     """
 
     x = np.asarray(noisy, dtype=np.float64)
     x -= np.mean(x)
     N = len(x)
 
+    # STFT Ayarları
     nperseg = int(win_len_sec * fs)
     hop = int(hop_len_sec * fs)
     noverlap = nperseg - hop
 
-    _, _, Y = stft(
-        x,
-        fs=fs,
-        window="hann",
-        nperseg=nperseg,
-        noverlap=noverlap,
-        nfft=nfft,
-        boundary="zeros",
-        padded=True,
-    )
-
+    # 1. STFT
+    _, _, Y = stft(x, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap, nfft=nfft, boundary="zeros", padded=True)
+    
     K, M = Y.shape
-    P = np.abs(Y) ** 2
+    P_noisy = np.abs(Y) ** 2
 
-    # --- Noise PSD initialization (robust) ---
-    init_frames = min(M, int(init_sec * fs / hop))
-    Phi_v = np.quantile(P[:, :init_frames], init_quantile, axis=1)
-    Phi_v = np.maximum(Phi_v, eps)
+    # 2. Gürültü Başlatma (İlk sessiz olduğu varsayılan kısım)
+    init_frames = max(1, int(init_sec * fs / hop))
+    init_frames = min(init_frames, M)
+    
+    # Başlangıç gürültü profili (Ortalama yerine Quantile daha güvenlidir)
+    Phi_noise = np.quantile(P_noisy[:, :init_frames], 0.2, axis=1)
+    Phi_noise = np.maximum(Phi_noise, eps)
 
+    # Çıktı matrisi
     S_hat = np.zeros_like(Y, dtype=np.complex128)
-    prev_S_hat = np.zeros(K, dtype=np.complex128)
-    P_s = Phi_v.copy()
+    
+    # Decision-Directed için önceki gain
+    prev_G_mag_sq = np.ones(K) 
 
+    # Noise Update Katsayısı (Gürültü tipine göre hafif ayar)
+    # Eğer stationary ise gürültü yavaş değişir (0.99), değilse hızlı (0.95)
+    alpha_noise_base = 0.99 if noise_type == "stationary" else 0.95
+
+    # --- ANA DÖNGÜ ---
     for m in range(M):
-        Ykm = Y[:, m]
-        Ypow = P[:, m]
+        Y_frame = Y[:, m]
+        P_frame = P_noisy[:, m]
 
-        # smoothed periodogram
-        P_s = psd_smooth * P_s + (1 - psd_smooth) * Ypow
-
-        # a-posteriori SNR
-        gamma = Ypow / (Phi_v + eps)
-
-        # decision-directed a-priori SNR
-        if m == 0:
-            xi = np.maximum(gamma - 1, 0)
-        else:
-            xi = alpha * (np.abs(prev_S_hat)**2 / (Phi_v + eps)) \
-                 + (1 - alpha) * np.maximum(gamma - 1, 0)
-
-        # Wiener gain
+        # A) A-Posteriori SNR (Oversubtraction burada devreye giriyor)
+        # Gürültüyü olduğundan büyük (1.5x) varsayıyoruz ki bastırma artsın.
+        gamma = P_frame / (oversubtraction * Phi_noise + eps)
+        
+        # B) A-Priori SNR (Decision Directed - Ephraim Malah)
+        # Önceki filtrelenmiş sinyalden gelen bilgi + şimdiki ölçüm
+        xi = alpha * (prev_G_mag_sq * (np.abs(Y[:, m-1])**2 if m > 0 else P_frame) / (Phi_noise + eps)) + \
+             (1 - alpha) * np.maximum(gamma - 1, 0)
+             
+        # C) Wiener Gain
         G = xi / (1 + xi)
         G = np.maximum(G, gain_floor)
+        
+        prev_G_mag_sq = G**2
 
-        Sh = G * Ykm
-        S_hat[:, m] = Sh
-        prev_S_hat = Sh
+        # D) Sinyali Filtrele
+        S_hat[:, m] = G * Y_frame
 
-        # ---- Adaptive noise tracking ----
-        speech_prob = np.clip((gamma - 1) / gamma_th, 0, 1)
-        beta = beta_noise_fast * (1 - speech_prob) + beta_noise_slow * speech_prob
+        # E) Gürültü Güncelleme (Adaptive Noise Tracking)
+        # Basit ama etkili bir VAD (Voice Activity Detection):
+        # Eğer hesaplanan Gain düşükse (G < 0.3), orada konuşma yok demektir -> Gürültüyü güncelle.
+        # Gain yüksekse konuşma vardır -> Gürültüyü güncelleme.
+        
+        # Olasılık maskesi: Konuşma yoksa 1, varsa 0
+        speech_absent_prob = 1.0 - np.clip(G * 2.0, 0, 1) 
+        
+        # Sadece gürültü olduğu düşünülen yerlerde güncelleme yap
+        alpha_t = alpha_noise_base + (1 - alpha_noise_base) * (1 - speech_absent_prob)
+        Phi_noise = alpha_t * Phi_noise + (1 - alpha_t) * P_frame
+        Phi_noise = np.maximum(Phi_noise, eps)
 
-        Phi_v = beta * Phi_v + (1 - beta) * P_s
-        Phi_v = np.maximum(Phi_v, eps)
-
-    _, enh = istft(
-        S_hat,
-        fs=fs,
-        window="hann",
-        nperseg=nperseg,
-        noverlap=noverlap,
-        nfft=nfft,
-    )
-
-    enh = enh[:N]
-    return np.nan_to_num(enh)
+    # 3. ISTFT
+    _, enh = istft(S_hat, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap, nfft=nfft)
+    
+    return np.nan_to_num(enh[:N])
