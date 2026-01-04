@@ -6,7 +6,7 @@ from scipy import signal
 # --- PROJE IMPORTLARI ---
 from core.audio_io import load_audio, normalize
 from core.mixing import mix_with_snr
-from enhancement.pca import PCADenoiser
+from enhancement.PCA import PCADenoiser
 
 # --- HİZALANMIŞ SNR (Hata payını yok eder) ---
 def get_aligned_snr_improvement(clean, processed, input_snr):

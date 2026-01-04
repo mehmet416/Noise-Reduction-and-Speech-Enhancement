@@ -11,7 +11,7 @@ def wiener_dd(
     alpha=0.98,            # A-priori SNR smoothing
     init_sec=0.2,          # İlk kaç saniyeyi gürültü kabul edelim?
     gain_floor=0.01,       # Maksimum bastırma (-40dB)
-    oversubtraction=1.5,   # SNR ARTIRICI HAMLE: Gürültüyü agresif çıkar
+    oversubtraction=1.0,   # SNR ARTIRICI HAMLE: Gürültüyü agresif çıkar
     eps=1e-10,
 ):
     """

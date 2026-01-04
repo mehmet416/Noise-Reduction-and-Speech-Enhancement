@@ -7,12 +7,12 @@ from core.audio_io import load_audio, normalize
 from core.mixing import mix_with_snr
 from enhancement.spectral_subtraction import spectral_subtraction
 from enhancement.wiener_static import wiener_filter_static
-from enhancement.wiener_adaptive import wiener_dd # Güncellediğimiz dosya
+from enhancement.wiener_adaptive import wiener_dd # The file we updated
 from enhancement.PCA import PCADenoiser
 from enhancement.adaptive import DualChannelSimulator, AdaptiveNLMSFilter
 
 # =============================================================================
-# HİZALAMA VE SNR (Senin kodun - Dokunulmadı)
+# ALIGNMENT AND SNR (Your code - Untouched)
 # =============================================================================
 def align_and_calculate_snr(clean, processed):
     e_clean = np.sum(clean ** 2)
@@ -68,27 +68,28 @@ def calculate_segmental_snr(clean, processed, fs, frame_len_sec=0.030):
     seg_snrs = np.clip(seg_snrs, -10, 35)
     return np.mean(seg_snrs)
 
-# --- AYARLAR ---
+# --- SETTINGS ---
 snr_list = [0, 2.5, 5, 7.5, 10]
 noise_files = {
     "Traffic": "data/noise/traffic.wav",
     "White":   "data/noise/white.wav",
-    "Office":  "data/noise/office.wav"
+    "Office":  "data/noise/office.wav",
+    "Environment": "data/noise/environment.wav"
 }
 
-methods = ["Spectral Subtraction", "Wiener Static", "Wiener DD", "PCA", "Adaptive LMS"]
+methods = ["Spectral Subtraction", "Wiener Static", "Wiener Adaptive", "PCA", "Adaptive LMS"]
 results_global = {n: {m: [] for m in methods} for n in noise_files}
 results_seg = {n: {m: [] for m in methods} for n in noise_files}
 
-print("Gelişmiş Hizalama (Alignment) ile Benchmark Başlıyor...")
+print("Starting Benchmark with Advanced Alignment...")
 clean_full, fs = load_audio("data/clean/clean_speech.wav")
 clean = normalize(clean_full[:5*fs]) 
 
-# Simülatör (Leakage ayarına dikkat: -25dB - SENİN KODUNDAKİ GİBİ)
+# Simulator (Note the leakage setting: -25dB - AS IN YOUR CODE)
 simulator = DualChannelSimulator(room_complexity=64)
 
 for noise_name, noise_path in noise_files.items():
-    print(f"\n>> Analiz Ediliyor: {noise_name}")
+    print(f"\n>> Analyzing: {noise_name}")
     noise, _ = load_audio(noise_path)
     noise = normalize(noise)
 
@@ -110,12 +111,12 @@ for noise_name, noise_path in noise_files.items():
         try: outputs["Wiener Static"] = wiener_filter_static(noisy_single, fs)
         except: outputs["Wiener Static"] = noisy_single
 
-        # 3. Wiener DD (Burası yeni yazdığımız fonksiyonu çağırıyor)
+        # 3. Wiener Adaptive (This calls the new function we wrote)
         try:
             ntype = "stationary" if "White" in noise_name else "nonstationary"
-            # Fonksiyonu noise_type parametresiyle çağırmaya devam ediyoruz (bozulmasın diye)
-            outputs["Wiener DD"] = wiener_dd(noisy_single, fs, noise_type=ntype)
-        except: outputs["Wiener DD"] = noisy_single
+            # We continue to call the function with the noise_type parameter (to avoid breaking it)
+            outputs["Wiener Adaptive"] = wiener_dd(noisy_single, fs, noise_type=ntype)
+        except: outputs["Wiener Adaptive"] = noisy_single
         
         # 4. PCA
         try:
@@ -123,9 +124,9 @@ for noise_name, noise_path in noise_files.items():
             outputs["PCA"] = pca.fit_transform(noisy_single)
         except: outputs["PCA"] = noisy_single
 
-        # 5. Adaptive LMS (Referans Sinyali Kullanarak)
+        # 5. Adaptive LMS (Using Reference Signal)
         try:
-            # Leakage -25dB (Senin kodun)
+            # Leakage -25dB (Your code)
             d_prim, x_ref = simulator.simulate(clean, noise, snr_db=snr, leakage_db=-25)
             nlms = AdaptiveNLMSFilter(filter_order=64, learning_rate=0.005)
             
@@ -133,7 +134,7 @@ for noise_name, noise_path in noise_files.items():
         except: 
             outputs["Adaptive LMS"] = noisy_single
 
-        # --- METRİKLER ---
+        # --- METRICS ---
         for m in methods:
             processed = outputs[m]
             
@@ -147,11 +148,11 @@ for noise_name, noise_path in noise_files.items():
             
         print(" OK.")
 
-# --- ÇİZDİRME (Düz Çizgiler) ---
+# --- PLOTTING (Solid Lines) ---
 colors = {
     "Spectral Subtraction": "red",
     "Wiener Static":        "orange",
-    "Wiener DD":            "green",
+    "Wiener Adaptive":      "green",
     "PCA":                  "purple",
     "Adaptive LMS":         "blue"
 }
