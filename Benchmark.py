@@ -8,7 +8,7 @@ from core.mixing import mix_with_snr
 from enhancement.spectral_subtraction import spectral_subtraction
 from enhancement.wiener_static import wiener_filter_static
 from enhancement.wiener_adaptive import wiener_dd # Güncellediğimiz dosya
-from enhancement.pca import PCADenoiser
+from enhancement.PCA import PCADenoiser
 from enhancement.adaptive import DualChannelSimulator, AdaptiveNLMSFilter
 
 # =============================================================================
