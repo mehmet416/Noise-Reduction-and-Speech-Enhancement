@@ -7,7 +7,7 @@ from core.audio_io import load_audio, normalize
 from core.mixing import mix_with_snr
 from enhancement.spectral_subtraction import spectral_subtraction
 from enhancement.wiener_static import wiener_filter_static
-from enhancement.wiener_adaptive import wiener_dd # The file we updated
+from enhancement.wiener_adaptive import wiener_dd
 from enhancement.PCA import PCADenoiser
 from enhancement.adaptive import DualChannelSimulator, AdaptiveNLMSFilter
 
@@ -17,7 +17,8 @@ from enhancement.adaptive import DualChannelSimulator, AdaptiveNLMSFilter
 def align_and_calculate_snr(clean, processed):
     e_clean = np.sum(clean ** 2)
     e_proc = np.sum(processed ** 2)
-    if e_proc == 0: return 0 
+    if e_proc == 0: 
+        return 0 
     
     processed = processed * np.sqrt(e_clean / e_proc)
 
@@ -30,7 +31,11 @@ def align_and_calculate_snr(clean, processed):
     elif best_lag < 0:
         processed_aligned = processed[-best_lag:]
         if len(processed_aligned) < len(clean):
-            processed_aligned = np.pad(processed_aligned, (0, len(clean)-len(processed_aligned)), mode='constant')
+            processed_aligned = np.pad(
+                processed_aligned, 
+                (0, len(clean) - len(processed_aligned)), 
+                mode='constant'
+            )
     else:
         processed_aligned = processed
 
@@ -42,31 +47,11 @@ def align_and_calculate_snr(clean, processed):
     p_signal = np.mean(clean ** 2)
     p_noise = np.mean(noise_residual ** 2)
     
-    if p_noise == 0: return 100
+    if p_noise == 0: 
+        return 100
+        
     return 10 * np.log10(p_signal / p_noise)
 
-
-def calculate_segmental_snr(clean, processed, fs, frame_len_sec=0.030):
-    min_len = min(len(clean), len(processed))
-    clean = clean[:min_len]; processed = processed[:min_len]
-    
-    e_c = np.sum(clean**2); e_p = np.sum(processed**2)
-    if e_p > 0: processed = processed * np.sqrt(e_c / e_p)
-    
-    frame_len = int(frame_len_sec * fs)
-    n_frames = int(len(clean) // frame_len)
-    
-    clean = clean[:n_frames*frame_len].reshape(n_frames, frame_len)
-    processed = processed[:n_frames*frame_len].reshape(n_frames, frame_len)
-    
-    noise = processed - clean
-    p_s = np.sum(clean**2, axis=1)
-    p_n = np.sum(noise**2, axis=1)
-    
-    eps = 1e-10
-    seg_snrs = 10 * np.log10((p_s + eps) / (p_n + eps))
-    seg_snrs = np.clip(seg_snrs, -10, 35)
-    return np.mean(seg_snrs)
 
 # --- SETTINGS ---
 snr_list = [0, 2.5, 5, 7.5, 10]
@@ -79,7 +64,6 @@ noise_files = {
 
 methods = ["Spectral Subtraction", "Wiener Static", "Wiener Adaptive", "PCA", "Adaptive LMS"]
 results_global = {n: {m: [] for m in methods} for n in noise_files}
-results_seg = {n: {m: [] for m in methods} for n in noise_files}
 
 print("Starting Benchmark with Advanced Alignment...")
 clean_full, fs = load_audio("data/clean/clean_speech.wav")
@@ -98,57 +82,54 @@ for noise_name, noise_path in noise_files.items():
         
         # --- Single Channel ---
         noisy_single, _ = mix_with_snr(clean, noise, snr_db=snr)
-        
-        seg_snr_in = calculate_segmental_snr(clean, noisy_single, fs)
 
         outputs = {}
         
-        # 1. SS
-        try: outputs["Spectral Subtraction"] = spectral_subtraction(noisy_single, fs)
-        except: outputs["Spectral Subtraction"] = noisy_single
+        # 1. Spectral Subtraction
+        try:
+            outputs["Spectral Subtraction"] = spectral_subtraction(noisy_single, fs)
+        except:
+            outputs["Spectral Subtraction"] = noisy_single
 
         # 2. Wiener Static
-        try: outputs["Wiener Static"] = wiener_filter_static(noisy_single, fs)
-        except: outputs["Wiener Static"] = noisy_single
+        try:
+            outputs["Wiener Static"] = wiener_filter_static(noisy_single, fs)
+        except:
+            outputs["Wiener Static"] = noisy_single
 
-        # 3. Wiener Adaptive (This calls the new function we wrote)
+        # 3. Wiener Adaptive
         try:
             ntype = "stationary" if "White" in noise_name else "nonstationary"
-            # We continue to call the function with the noise_type parameter (to avoid breaking it)
             outputs["Wiener Adaptive"] = wiener_dd(noisy_single, fs, noise_type=ntype)
-        except: outputs["Wiener Adaptive"] = noisy_single
+        except:
+            outputs["Wiener Adaptive"] = noisy_single
         
         # 4. PCA
         try:
             pca = PCADenoiser(embedding_dim=300, energy_threshold=0.8)
             outputs["PCA"] = pca.fit_transform(noisy_single)
-        except: outputs["PCA"] = noisy_single
+        except:
+            outputs["PCA"] = noisy_single
 
         # 5. Adaptive LMS (Using Reference Signal)
         try:
-            # Leakage -25dB (Your code)
-            d_prim, x_ref = simulator.simulate(clean, noise, snr_db=snr, leakage_db=-25)
+            d_prim, x_ref = simulator.simulate(
+                clean, noise, snr_db=snr, leakage_db=-25
+            )
             nlms = AdaptiveNLMSFilter(filter_order=64, learning_rate=0.005)
-            
             outputs["Adaptive LMS"] = nlms.process(d_prim, x_ref, auto_sync=True)
-        except: 
+        except:
             outputs["Adaptive LMS"] = noisy_single
 
-        # --- METRICS ---
+        # --- GLOBAL SNR METRIC ---
         for m in methods:
             processed = outputs[m]
-            
-            # Global
             snr_out = align_and_calculate_snr(clean, processed)
             results_global[noise_name][m].append(snr_out - snr)
             
-            # Segmental
-            snr_seg_out = calculate_segmental_snr(clean, processed, fs)
-            results_seg[noise_name][m].append(snr_seg_out - seg_snr_in)
-            
         print(" OK.")
 
-# --- PLOTTING (Solid Lines) ---
+# --- PLOTTING (ONLY GLOBAL SNR) ---
 colors = {
     "Spectral Subtraction": "red",
     "Wiener Static":        "orange",
@@ -158,27 +139,32 @@ colors = {
 }
 
 for noise_name in noise_files.keys():
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    plt.figure(figsize=(8, 6))
     
-    # Global SNR
-    ax1.axhline(0, color='black', alpha=0.3, linewidth=1)
+    plt.axhline(0, color='black', alpha=0.3, linewidth=1)
+    
     for m in methods:
         lw = 3.0 if m == "Adaptive LMS" else 2.0
-        ax1.plot(snr_list, results_global[noise_name][m], label=m, 
-                 color=colors[m], linestyle='-', linewidth=lw, marker='o', markersize=8)
-    ax1.set_title(f"Global SNR Improvement (Aligned) - {noise_name}", fontsize=12, fontweight='bold')
-    ax1.set_xlabel("Input SNR (dB)"); ax1.set_ylabel("Improvement (dB)")
-    ax1.set_xticks(snr_list); ax1.grid(True, alpha=0.4); ax1.legend()
-
-    # Segmental SNR
-    ax2.axhline(0, color='black', alpha=0.3, linewidth=1)
-    for m in methods:
-        lw = 3.0 if m == "Adaptive LMS" else 2.0
-        ax2.plot(snr_list, results_seg[noise_name][m], label=m, 
-                 color=colors[m], linestyle='-', linewidth=lw, marker='s', markersize=8)
-    ax2.set_title(f"Segmental SNR Improvement - {noise_name}", fontsize=12, fontweight='bold')
-    ax2.set_xlabel("Input SNR (dB)"); ax2.set_ylabel("SegSNR Improvement (dB)")
-    ax2.set_xticks(snr_list); ax2.grid(True, alpha=0.4); ax2.legend()
-    
+        plt.plot(
+            snr_list,
+            results_global[noise_name][m],
+            label=m,
+            color=colors[m],
+            linestyle='-',
+            linewidth=lw,
+            marker='o',
+            markersize=8
+        )
+        
+    plt.title(
+        f"Global SNR Improvement (Aligned) - {noise_name}",
+        fontsize=12,
+        fontweight='bold'
+    )
+    plt.xlabel("Input SNR (dB)")
+    plt.ylabel("Improvement (dB)")
+    plt.xticks(snr_list)
+    plt.grid(True, alpha=0.4)
+    plt.legend()
     plt.tight_layout()
     plt.show()

@@ -23,10 +23,11 @@ class PCADenoiser:
         return reconstructed / count
 
     def fit_transform(self, noisy_signal):
-        # Koruma
-        if len(noisy_signal) < self.L: return noisy_signal
+        # Safeguard
+        if len(noisy_signal) < self.L: 
+            return noisy_signal
 
-        # 1. Hankel
+        # 1. Hankel construction
         first_col = noisy_signal[:self.L]
         last_row = noisy_signal[self.L-1:]
         H = hankel(first_col, last_row)
@@ -35,18 +36,15 @@ class PCADenoiser:
         U, S, Vt = svd(H, full_matrices=False)
         self.singular_values = S
         
-        # 3. K Seçimi
+        # 3. K selection
         if self.energy_th is not None:
             total_energy = np.sum(S**2)
             cumulative = np.cumsum(S**2) / total_energy
             
-            # Eşiği geçen nokta
+            # First index exceeding the energy threshold
             k_idx = np.searchsorted(cumulative, self.energy_th)
             current_k = k_idx + 1
             
-            # --- DÜZELTME BURADA ---
-            # Eskiden *0.5 ile sınırlandırmıştık, şimdi kaldırıyoruz.
-            # Sadece matris boyutunu aşmasın yeter.
             current_k = max(1, min(current_k, len(S) - 1))
             self.used_k = current_k
             
@@ -54,7 +52,7 @@ class PCADenoiser:
             current_k = self.K if self.K is not None else 20
             self.used_k = current_k
 
-        # 4. Thresholding
+        # 4. Singular value thresholding
         S_clean = np.zeros_like(S)
         S_clean[:self.used_k] = S[:self.used_k]
         

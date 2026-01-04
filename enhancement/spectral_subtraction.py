@@ -22,21 +22,15 @@ def spectral_subtraction(
     phase = np.angle(X)
     
     # 2. Noise Estimation (using initial silence)
-    # We assume the first 5-6 frames are noise. 
-    # If your file starts immediately with speech, this needs a VAD.
     n_init = 6
     noise_est = np.mean(mag[:, :n_init], axis=1, keepdims=True)
     
     # 3. Frequency Smoothing (Optional but recommended)
-    # Smooths the noise estimate to avoid subtracting sharp random peaks
     if smoothing_width > 1:
         kernel = np.ones((smoothing_width, 1)) / smoothing_width
         noise_est = convolve2d(noise_est, kernel, mode='same', boundary='symm')
 
     # 4. Subtraction with Flooring
-    # |X_hat|^2 = |Y|^2 - alpha * |N|^2  (Power subtraction is often better than Magnitude)
-    # Here we stick to Magnitude for simplicity as per your previous code
-    
     subtracted_mag = mag - (alpha * noise_est)
     
     # Apply Spectral Floor
@@ -53,11 +47,7 @@ def spectral_subtraction(
     elif len(x_hat) < len(x):
         x_hat = np.pad(x_hat, (0, len(x) - len(x_hat)))
 
-    # 7. CRITICAL: Energy Recovery / Gain Normalization
-    # Spectral subtraction reduces energy. We must restore the scale 
-    # to match the clean speech level for valid SNR calculation.
-    # Note: In real-time apps we don't have the clean ref, but for evaluation we align energies.
-    # Here we roughly normalize to input peak to avoid "quiet" output.
+    # 7. Energy Recovery / Gain Normalization
     scale_factor = np.max(np.abs(x)) / (np.max(np.abs(x_hat)) + 1e-8)
     x_hat = x_hat * scale_factor
 
