@@ -12,7 +12,7 @@ from enhancement.PCA import PCADenoiser
 from enhancement.adaptive import DualChannelSimulator, AdaptiveNLMSFilter
 
 # =============================================================================
-# ALIGNMENT AND SNR (Your code - Untouched)
+# ALIGNMENT AND SNR CALCULATION
 # =============================================================================
 def align_and_calculate_snr(clean, processed):
     e_clean = np.sum(clean ** 2)
@@ -69,7 +69,7 @@ print("Starting Benchmark with Advanced Alignment...")
 clean_full, fs = load_audio("data/clean/clean_speech.wav")
 clean = normalize(clean_full[:5*fs]) 
 
-# Simulator (Note the leakage setting: -25dB - AS IN YOUR CODE)
+# Simulator (Note the leakage setting: -25dB )
 simulator = DualChannelSimulator(room_complexity=64)
 
 for noise_name, noise_path in noise_files.items():
@@ -129,7 +129,7 @@ for noise_name, noise_path in noise_files.items():
             
         print(" OK.")
 
-# --- PLOTTING (ONLY GLOBAL SNR) ---
+# --- PLOTTING ---
 colors = {
     "Spectral Subtraction": "red",
     "Wiener Static":        "orange",

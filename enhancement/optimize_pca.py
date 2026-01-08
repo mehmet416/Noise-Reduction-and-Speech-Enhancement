@@ -2,13 +2,11 @@ import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 from scipy import signal
-
-# --- PROJE IMPORTLARI ---
 from core.audio_io import load_audio, normalize
 from core.mixing import mix_with_snr
 from enhancement.PCA import PCADenoiser
 
-# --- HİZALANMIŞ SNR (Hata payını yok eder) ---
+# --- Utility: compute SNR improvement after energy normalization + time alignment ---
 def get_aligned_snr_improvement(clean, processed, input_snr):
     e_c = np.sum(clean**2); e_p = np.sum(processed**2)
     if e_p > 0: processed = processed * np.sqrt(e_c/e_p)
@@ -28,18 +26,18 @@ def get_aligned_snr_improvement(clean, processed, input_snr):
     if p_n == 0: return 0
     return 10*np.log10(np.mean(c**2)/p_n) - input_snr
 
-# --- ÇİFT PARAMETRE OPTİMİZASYONU ---
-# Hem Pencere Boyutunu (L) hem Enerji Eşiğini (Th) aynı anda deniyoruz.
+# --- TWO-PARAMETER OPTIMIZATION (GRID SEARCH) ---
+# We try both the window size (L) and the energy threshold (Th) simultaneously.
 L_list = [50, 100, 200, 300, 400, 500]
 Th_list = [0.60, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
 
-noise_path = "data/noise/white.wav" # Önce White noise'da en iyiyi bulalım
+noise_path = "data/noise/white.wav"  # First, find the best parameters on white noise
 target_snr = 5
 
 print(f"--- ULTIMATE PCA GRID SEARCH ({target_snr}dB White Noise) ---")
 
 clean_full, fs = load_audio("data/clean/clean_speech.wav")
-clean = normalize(clean_full[:3*fs]) # 3 saniye
+clean = normalize(clean_full[:3*fs])  # 3 seconds
 
 noise, _ = load_audio(noise_path)
 noise = normalize(noise)
@@ -50,18 +48,18 @@ results = np.zeros((len(L_list), len(Th_list)))
 for i, L in enumerate(L_list):
     for j, th in enumerate(Th_list):
         try:
-            # PCA Çalıştır
+            # Run PCA
             pca = PCADenoiser(embedding_dim=L, energy_threshold=th)
             out = pca.fit_transform(noisy)
             
-            # Puanla
+            # Score (SNR improvement)
             imp = get_aligned_snr_improvement(clean, out, target_snr)
             results[i, j] = imp
-            # print(f"L={L}, Th={th} -> {imp:.2f} dB") # Çok kalabalık olmasın diye kapattım
+            # print(f"L={L}, Th={th} -> {imp:.2f} dB")  # Disabled to avoid clutter
         except:
             results[i, j] = 0
 
-# --- SONUÇ ANALİZİ ---
+# --- RESULT ANALYSIS ---
 best_idx = np.unravel_index(np.argmax(results), results.shape)
 best_L = L_list[best_idx[0]]
 best_th = Th_list[best_idx[1]]
@@ -74,7 +72,7 @@ print(f"   Energy Threshold (Th)   : {best_th}")
 print(f"   Max Improvement         : {best_score:.2f} dB")
 print("="*50)
 
-# Isı Haritası (Hangi ayarın daha iyi olduğunu gözle gör)
+# Heatmap (visualize which setting performs better)
 plt.figure(figsize=(10, 6))
 sns.heatmap(results, annot=True, fmt=".2f", cmap="RdYlGn", 
             xticklabels=Th_list, yticklabels=L_list)

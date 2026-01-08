@@ -3,28 +3,28 @@ from scipy import signal
 
 class DualChannelSimulator:
     """
-    Çift mikrofonlu ortam simülatörü.
+    Dual Channel Acoustic Simulator for Adaptive Filtering.
     """
     def __init__(self, room_complexity=64):
-        # Oda yankısı (Reverb) için rastgele bir filtre
+        # Random seed for reproducibility
         np.random.seed(42)
-        # 64 tap'lik bir oda impuls yanıtı
+        # Room impulse response (FIR filter)
         self.room_impulse = signal.firwin(room_complexity, 0.5)
 
     def simulate(self, clean_speech, noise_source, snr_db=0, leakage_db=-30):
         """
-        leakage_db: -30 veya -40 dB olması LMS için daha sağlıklıdır.
+        leakage_db: -30 dB means that the speech leaks into the reference mic at 30 dB lower power.
         """
-        # Boyutları eşitle
+        # Ensure numpy arrays
         min_len = min(len(clean_speech), len(noise_source))
         s = clean_speech[:min_len].astype(float)
         n = noise_source[:min_len].astype(float)
         
-        # 1. Akustik Yol (Gürültü -> Ana Mikrofon)
-        # Gürültü odaya çarpıp ana mikrofona gelir
+        # 1. Room Impulse Response
+        # Noise reflects in the room and arrives at the primary microphone
         noise_at_primary = signal.lfilter(self.room_impulse, 1.0, n)
         
-        # 2. SNR Ayarı (Ana Mikrofon)
+        # 2. SNR Adjustment (Primary Microphone)
         s_power = np.mean(s**2) + 1e-10
         n_power = np.mean(noise_at_primary**2) + 1e-10
         target_n_power = s_power / (10**(snr_db/10))
@@ -33,8 +33,8 @@ class DualChannelSimulator:
         
         primary_mic = s + noise_at_primary
         
-        # 3. Sızıntı Yolu (Konuşma -> Referans Mikrofon)
-        # Referans mikrofon gürültüyü net duyar (n), ama konuşma da sızar (leakage)
+        # 3. Leakage into Reference Microphone
+        # Reference microphone hears noise clearly (n), but speech also leaks in (leakage)
         raw_n_power = np.mean(n**2) + 1e-10
         target_leakage_power = raw_n_power / (10**(abs(leakage_db)/10))
         leak_scale = np.sqrt(target_leakage_power / s_power)
@@ -57,11 +57,10 @@ class AdaptiveNLMSFilter:
         self.w = np.zeros(self.M)
         
     def process(self, primary, reference, auto_sync=True):
-        # Numpy array garantisi
         d = np.array(primary, dtype=float)
         x = np.array(reference, dtype=float)
         
-        # Basit Senkronizasyon (Gecikme bulma)
+        # Simple Synchronization (Finding delay between d and x)
         if auto_sync:
             corr = signal.correlate(d, x, mode='full', method='fft')
             lags = signal.correlation_lags(len(d), len(x), mode='full')
@@ -82,18 +81,18 @@ class AdaptiveNLMSFilter:
         
         # LMS Loop
         for n in range(n_samples):
-            # Buffer kaydır ve yeni örneği al
+            # Shift buffer and add new sample
             input_buffer = np.roll(input_buffer, 1)
             input_buffer[0] = x[n]
             
-            # Tahmin (Gürültü tahmini)
+            # Prediction (Noise estimate)
             y = np.dot(self.w, input_buffer)
             
-            # Hata (Temizlenmiş sinyal)
+            # Error (Enhanced signal)
             e[n] = d[n] - y
             
-            # NLMS Ağırlık Güncellemesi
-            # Norm'a bölerek sinyal şiddetinden bağımsız hale getiriyoruz
+            # NLMS Weight Update
+            # Normalize by norm to make independent of signal power
             x_norm = np.dot(input_buffer, input_buffer)
             step = self.mu / (x_norm + eps)
             
